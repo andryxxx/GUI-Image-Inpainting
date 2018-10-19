@@ -1,55 +1,79 @@
 import sys
 
-from PyQt5.QtCore import QPoint, Qt, QRect, QSize, pyqtSlot, pyqtRemoveInputHook
+from PyQt5.QtCore import QPoint, Qt, QRect, QSize
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QWidget, QApplication, QLabel, QHBoxLayout, QPushButton, QRadioButton, QGridLayout, \
-    QRubberBand, QFileDialog
+from PyQt5.QtWidgets import QWidget, QApplication, QLabel, QPushButton, QRadioButton, QGridLayout, \
+    QRubberBand, QFileDialog, QMessageBox
 
+import numpy as np
+import imageio
+from shutil import copyfile
+
+import matplotlib.pyplot as plt
+from skimage.restoration import inpaint
+
+debug = False
 
 class ImageProcessor(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('image application')
+        self.setWindowTitle('Inpaint application')
 
-        self.image1 = Image1()
-        self.image1.setMinimumSize(300, 300)
-        #self.image1.setPixmap(QPixmap('image1.jpeg'))
+        self.image1 = Image()
+        self.image1.setMinimumWidth(250)
 
-        self.image2 = QLabel()
-        self.image2.setMinimumSize(300, 300)
-        #self.image2.setPixmap(QPixmap('image1.jpeg'))
+        upload_button = QPushButton('upload')
+        upload_button.clicked.connect(self.upload)
 
-        uploadButton = QPushButton('upload')
-        uploadButton.clicked.connect(self.upload)
-
-        transformButton = QPushButton('transform')
-        transformButton.clicked.connect(self.transform)
-
-        self.function1 = QRadioButton('function1')
-        self.function1.setChecked(True)
-        self.function2 = QRadioButton('function2')
-        self.function2.toggled.connect(self.rect_select_visibility)
+        transform_button = QPushButton('transform')
+        transform_button.clicked.connect(self.transform)
 
         grid = QGridLayout()
         grid.addWidget(self.image1, 1, 0)
-        grid.addWidget(self.function1, 1, 1)
-        grid.addWidget(self.function2, 1, 2)
-        grid.addWidget(self.image2, 1, 3)
-        grid.addWidget(uploadButton, 2, 0)
-        grid.addWidget(transformButton, 2, 3)
+        grid.addWidget(upload_button, 2, 0)
+        grid.addWidget(transform_button, 2, 3)
         self.setLayout(grid)
 
         self.show()
 
-    def call_function1(self, coordinates):
-        print("executing function 1...")
-        print("coordinates are {}".format(coordinates))
-        return "image1.jpeg"
+    def call_inpaint(self, coordinates):
+        image_orig = imageio.imread(self.image1.image_path)
+        mask = np.zeros(image_orig.shape[:-1])
+        mask[coordinates[0][1]:coordinates[1][1], coordinates[0][0]:coordinates[1][0]] = 1
 
-    def call_function2(self):
-        print("executing function 2...")
-        return "image1.jpeg"
+        image_defect = image_orig.copy()
+
+        for layer in range(image_defect.shape[-1]):
+            image_defect[np.where(mask)] = 0
+
+        image_result = inpaint.inpaint_biharmonic(image_defect, mask, multichannel=True)
+
+        if debug:
+            fig, axes = plt.subplots(ncols=2, nrows=2)
+            ax = axes.ravel()
+
+            ax[0].set_title('Original image')
+            ax[0].imshow(image_orig)
+
+            ax[1].set_title('Mask')
+            ax[1].imshow(mask, cmap=plt.cm.gray)
+
+            ax[2].set_title('Defected image')
+            ax[2].imshow(image_defect)
+
+            ax[3].set_title('Inpainted image')
+            ax[3].imshow(image_result)
+
+            for a in ax:
+                a.axis('off')
+
+            fig.tight_layout()
+            plt.show()
+
+        imageio.imwrite(self.image1.image_path, image_result)
+        self.image1.selection.hide()
+
 
     def upload(self):
         # taken from https://pythonspot.com/en/pyqt5-file-dialog/
@@ -57,45 +81,38 @@ class ImageProcessor(QWidget):
         options |= QFileDialog.DontUseNativeDialog
         file, _ = QFileDialog.getOpenFileName(self, 'Open file', options=options)
         if file:
-            print(file)
-            self.image1.setPixmap(QPixmap(file))
-            print("uploading image...")
+            height, width, _ = imageio.imread(file).shape
+            self.image1.setMinimumSize(width, height)
+            self.image1.image_path = file.rsplit('.', 1)[0]+'_out.'+file.rsplit('.', 1)[1]
+            copyfile(file, self.image1.image_path)
+            self.image1.setPixmap(QPixmap(self.image1.image_path))
+
 
     def transform(self):
-        if self.function1.isChecked():
-            if self.image1.selection_origin is None or self.image1.selection_end is None:
-                print("please select a rectangular area.")
-            else:
-                coordinates = self.get_coordinates(self.image1.selection_origin, self.image1.selection_end)
-                transformed_image = self.call_function1(coordinates)
-                self.image2.setPixmap(QPixmap(transformed_image))
+        if self.image1.image_path is None:
+            QMessageBox.information(self, 'Error', "Please upload an image.", QMessageBox.Ok, QMessageBox.Ok)
+        elif (self.image1.selection_origin is None or self.image1.selection_end is None) and self.image1.image_path is not None:
+            QMessageBox.information(self, 'Error', "Please select a rectangular area.", QMessageBox.Ok, QMessageBox.Ok)
         else:
-            transformed_image = self.call_function2()
-            self.image2.setPixmap(QPixmap(transformed_image))
+            coordinates = self.get_coordinates(self.image1.selection_origin, self.image1.selection_end)
+            self.call_inpaint(coordinates)
+            self.image1.setPixmap(QPixmap(self.image1.image_path))
 
 
     def get_coordinates(self, origin, end):
         origin = (origin.x(), origin.y())
         end = (end.x(), end.y())
-        c3 = (origin.x(), end.y())
-        c4 = (end.x(), origin.y())
-
         return origin, end
 
 
-    def rect_select_visibility(self):
-        if self.function1.isChecked():
-            self.image1.selection.show()
-        else:
-            self.image1.selection.hide()
-
-class Image1(QLabel):
+class Image(QLabel):
     # taken from https://wiki.python.org/moin/PyQt/Selecting%20a%20region%20of%20a%20widget
     def __init__(self, parent=None):
         QLabel.__init__(self, parent)
         self.selection = QRubberBand(QRubberBand.Rectangle, self)
         self.selection_origin = None
         self.selection_end = None
+        self.image_path = None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -110,7 +127,6 @@ class Image1(QLabel):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.selection_end = QPoint(event.pos())
-
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
